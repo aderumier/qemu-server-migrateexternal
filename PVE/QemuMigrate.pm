@@ -555,37 +555,14 @@ sub phase2 {
     my $ruri; # the whole migration dst. URI (protocol:address[:port])
     my $nodename = PVE::INotify::nodename();
 
-    ## start on remote node
-    my $cmd = [@{$self->{rem_ssh}}];
-
     my $spice_ticket;
     if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
 	my $res = mon_cmd($vmid, 'query-spice');
 	$spice_ticket = $res->{ticket};
     }
 
-    push @$cmd , 'qm', 'start', $vmid, '--skiplock', '--migratedfrom', $nodename;
-
     my $migration_type = $self->{opts}->{migration_type};
-
-    push @$cmd, '--migration_type', $migration_type;
-
-    push @$cmd, '--migration_network', $self->{opts}->{migration_network}
-      if $self->{opts}->{migration_network};
-
-    if ($migration_type eq 'insecure') {
-	push @$cmd, '--stateuri', 'tcp';
-    } else {
-	push @$cmd, '--stateuri', 'unix';
-    }
-
-    if ($self->{forcemachine}) {
-	push @$cmd, '--machine', $self->{forcemachine};
-    }
-
-    if ($self->{online_local_volumes}) {
-	push @$cmd, '--targetstorage', ($self->{opts}->{targetstorage} // '1');
-    }
+    my $cmd = generate_migrate_start_cmd($self, $vmid, $nodename, $migration_type);
 
     my $spice_port;
 
@@ -1098,6 +1075,34 @@ sub final_cleanup {
 sub round_powerof2 {
     return 1 if $_[0] < 2;
     return 2 << int(log($_[0]-1)/log(2));
+}
+
+sub generate_migrate_start_cmd {
+    my ($self, $vmid, $nodename, $migration_type) = @_;
+
+    my $cmd = [@{$self->{rem_ssh}}];
+
+    push @$cmd , 'qm', 'start', $vmid, '--skiplock', '--migratedfrom', $nodename;
+
+    push @$cmd, '--migration_type', $migration_type;
+
+    push @$cmd, '--migration_network', $self->{opts}->{migration_network}
+      if $self->{opts}->{migration_network};
+
+    if ($migration_type eq 'insecure') {
+	push @$cmd, '--stateuri', 'tcp';
+    } else {
+	push @$cmd, '--stateuri', 'unix';
+    }
+
+    if ($self->{forcemachine}) {
+	push @$cmd, '--machine', $self->{forcemachine};
+    }
+
+    if ($self->{online_local_volumes}) {
+	push @$cmd, '--targetstorage', ($self->{opts}->{targetstorage} // '1');
+    }
+    return $cmd;
 }
 
 1;
