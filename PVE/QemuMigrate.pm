@@ -559,33 +559,11 @@ sub phase2 {
 
     start_remote_tunnel($self, $nodename, $migration_type, $raddr, $rport, $ruri);
 
+    livemigrate_storage($self, $vmid);
+
     my $start = time();
 
     my $opt_bwlimit = $self->{opts}->{bwlimit};
-
-    if (defined($self->{online_local_volumes})) {
-	$self->{storage_migration} = 1;
-	$self->{storage_migration_jobs} = {};
-	$self->log('info', "starting storage migration");
-
-	die "The number of local disks does not match between the source and the destination.\n"
-	    if (scalar(keys %{$self->{target_drive}}) != scalar @{$self->{online_local_volumes}});
-	foreach my $drive (keys %{$self->{target_drive}}){
-	    my $target = $self->{target_drive}->{$drive};
-	    my $nbd_uri = $target->{nbd_uri};
-
-	    my $source_drive = PVE::QemuServer::parse_drive($drive, $conf->{$drive});
-	    my $target_drive = PVE::QemuServer::parse_drive($drive, $target->{drivestr});
-
-	    my $source_sid = PVE::Storage::Plugin::parse_volume_id($source_drive->{file});
-	    my $target_sid = PVE::Storage::Plugin::parse_volume_id($target_drive->{file});
-
-	    my $bwlimit = PVE::Storage::get_bandwidth_limit('migration', [$source_sid, $target_sid], $opt_bwlimit);
-
-	    $self->log('info', "$drive: start migration to $nbd_uri");
-	    PVE::QemuServer::qemu_drive_mirror($vmid, $drive, $nbd_uri, $vmid, undef, $self->{storage_migration_jobs}, 1, undef, $bwlimit);
-	}
-    }
 
     $self->log('info', "starting online/live migration on $ruri");
     $self->{livemigration} = 1;
@@ -1118,6 +1096,37 @@ sub start_remote_tunnel {
     } else {
 	#fork tunnel for insecure migration, to send faster commands like resume
 	$self->{tunnel} = $self->fork_tunnel();
+    }
+}
+
+sub livemigrate_storage {
+    my ($self, $vmid) = @_;
+
+    my $conf = $self->{vmconf};
+    my $opt_bwlimit = $self->{opts}->{bwlimit};
+
+    if (defined($self->{online_local_volumes})) {
+	$self->{storage_migration} = 1;
+	$self->{storage_migration_jobs} = {};
+	$self->log('info', "starting storage migration");
+
+	die "The number of local disks does not match between the source and the destination.\n"
+	    if (scalar(keys %{$self->{target_drive}}) != scalar @{$self->{online_local_volumes}});
+	foreach my $drive (keys %{$self->{target_drive}}){
+	    my $target = $self->{target_drive}->{$drive};
+	    my $nbd_uri = $target->{nbd_uri};
+
+	    my $source_drive = PVE::QemuServer::parse_drive($drive, $conf->{$drive});
+	    my $target_drive = PVE::QemuServer::parse_drive($drive, $target->{drivestr});
+
+	    my $source_sid = PVE::Storage::Plugin::parse_volume_id($source_drive->{file});
+	    my $target_sid = PVE::Storage::Plugin::parse_volume_id($target_drive->{file});
+
+	    my $bwlimit = PVE::Storage::get_bandwidth_limit('migration', [$source_sid, $target_sid], $opt_bwlimit);
+
+	    $self->log('info', "$drive: start migration to $nbd_uri");
+	    PVE::QemuServer::qemu_drive_mirror($vmid, $drive, $nbd_uri, $vmid, undef, $self->{storage_migration_jobs}, 1, undef, $bwlimit);
+	}
     }
 }
 
