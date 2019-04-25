@@ -546,69 +546,16 @@ sub phase1_cleanup {
 sub phase2 {
     my ($self, $vmid) = @_;
 
+    my $nodename = PVE::INotify::nodename();
+
     my $conf = $self->{vmconf};
 
     $self->log('info', "starting VM $vmid on remote node '$self->{node}'");
 
-    my $raddr;
-    my $rport;
-    my $ruri; # the whole migration dst. URI (protocol:address[:port])
-    my $nodename = PVE::INotify::nodename();
-
-    my $spice_ticket;
-    if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
-	my $res = mon_cmd($vmid, 'query-spice');
-	$spice_ticket = $res->{ticket};
-    }
-
     my $migration_type = $self->{opts}->{migration_type};
     my $cmd = generate_migrate_start_cmd($self, $vmid, $nodename, $migration_type);
 
-    my $spice_port;
-
-    # Note: We try to keep $spice_ticket secret (do not pass via command line parameter)
-    # instead we pipe it through STDIN
-    my $exitcode = PVE::Tools::run_command($cmd, input => $spice_ticket, outfunc => sub {
-	my $line = shift;
-
-	if ($line =~ m/^migration listens on tcp:(localhost|[\d\.]+|\[[\d\.:a-fA-F]+\]):(\d+)$/) {
-	    $raddr = $1;
-	    $rport = int($2);
-	    $ruri = "tcp:$raddr:$rport";
-	}
-	elsif ($line =~ m!^migration listens on unix:(/run/qemu-server/(\d+)\.migrate)$!) {
-	    $raddr = $1;
-	    die "Destination UNIX sockets VMID does not match source VMID" if $vmid ne $2;
-	    $ruri = "unix:$raddr";
-	}
-	elsif ($line =~ m/^migration listens on port (\d+)$/) {
-	    $raddr = "localhost";
-	    $rport = int($1);
-	    $ruri = "tcp:$raddr:$rport";
-	}
-	elsif ($line =~ m/^spice listens on port (\d+)$/) {
-	    $spice_port = int($1);
-	}
-	elsif ($line =~ m/^storage migration listens on nbd:(localhost|[\d\.]+|\[[\d\.:a-fA-F]+\]):(\d+):exportname=(\S+) volume:(\S+)$/) {
-	    my $drivestr = $4;
-	    my $nbd_uri = "nbd:$1:$2:exportname=$3";
-	    my $targetdrive = $3;
-	    $targetdrive =~ s/drive-//g;
-
-	    $self->{target_drive}->{$targetdrive}->{drivestr} = $drivestr;
-	    $self->{target_drive}->{$targetdrive}->{nbd_uri} = $nbd_uri;
-
-	} elsif ($line =~ m/^QEMU: (.*)$/) {
-	    $self->log('info', "[$self->{node}] $1\n");
-	}
-    }, errfunc => sub {
-	my $line = shift;
-	$self->log('info', "[$self->{node}] $line");
-    }, noerr => 1);
-
-    die "remote command failed with exit code $exitcode\n" if $exitcode;
-
-    die "unable to detect remote migration address\n" if !$raddr;
+    my ($raddr, $rport, $ruri, $spice_port, $spice_ticket) = find_remote_ports($self, $vmid, $cmd);
 
     $self->log('info', "start remote tunnel");
 
@@ -1103,6 +1050,69 @@ sub generate_migrate_start_cmd {
 	push @$cmd, '--targetstorage', ($self->{opts}->{targetstorage} // '1');
     }
     return $cmd;
+}
+
+sub find_remote_ports {
+    my ($self, $vmid, $cmd) = @_;
+
+    my $conf = $self->{vmconf};
+
+    my $spice_ticket;
+    if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
+	my $res = mon_cmd($vmid, 'query-spice');
+	$spice_ticket = $res->{ticket};
+    }
+
+    my $spice_port;
+    my $raddr;
+    my $rport;
+    my $ruri; # the whole migration dst. URI (protocol:address[:port])
+
+    # Note: We try to keep $spice_ticket secret (do not pass via command line parameter)
+    # instead we pipe it through STDIN
+    my $exitcode = PVE::Tools::run_command($cmd, input => $spice_ticket, outfunc => sub {
+	my $line = shift;
+
+	if ($line =~ m/^migration listens on tcp:(localhost|[\d\.]+|\[[\d\.:a-fA-F]+\]):(\d+)$/) {
+	    $raddr = $1;
+	    $rport = int($2);
+	    $ruri = "tcp:$raddr:$rport";
+	}
+	elsif ($line =~ m!^migration listens on unix:(/run/qemu-server/(\d+)\.migrate)$!) {
+	    $raddr = $1;
+	    die "Destination UNIX sockets VMID does not match source VMID" if $vmid ne $2;
+	    $ruri = "unix:$raddr";
+	}
+	elsif ($line =~ m/^migration listens on port (\d+)$/) {
+	    $raddr = "localhost";
+	    $rport = int($1);
+	    $ruri = "tcp:$raddr:$rport";
+	}
+	elsif ($line =~ m/^spice listens on port (\d+)$/) {
+	    $spice_port = int($1);
+	}
+	elsif ($line =~ m/^storage migration listens on nbd:(localhost|[\d\.]+|\[[\d\.:a-fA-F]+\]):(\d+):exportname=(\S+) volume:(\S+)$/) {
+	    my $drivestr = $4;
+	    my $nbd_uri = "nbd:$1:$2:exportname=$3";
+	    my $targetdrive = $3;
+	    $targetdrive =~ s/drive-//g;
+
+	    $self->{target_drive}->{$targetdrive}->{drivestr} = $drivestr;
+	    $self->{target_drive}->{$targetdrive}->{nbd_uri} = $nbd_uri;
+
+	} elsif ($line =~ m/^QEMU: (.*)$/) {
+	    $self->log('info', "[$self->{node}] $1\n");
+	}
+    }, errfunc => sub {
+	my $line = shift;
+	$self->log('info', "[$self->{node}] $line");
+    }, noerr => 1);
+
+    die "remote command failed with exit code $exitcode\n" if $exitcode;
+
+    die "unable to detect remote migration address\n" if !$raddr;
+
+    return ($raddr, $rport, $ruri, $spice_port, $spice_ticket);
 }
 
 1;
