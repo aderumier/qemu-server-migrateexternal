@@ -557,45 +557,7 @@ sub phase2 {
 
     my ($raddr, $rport, $ruri, $spice_port, $spice_ticket) = find_remote_ports($self, $vmid, $cmd);
 
-    $self->log('info', "start remote tunnel");
-
-    if ($migration_type eq 'secure') {
-
-	if ($ruri =~ /^unix:/) {
-	    unlink $raddr;
-	    $self->{tunnel} = $self->fork_tunnel("$raddr:$raddr");
-	    $self->{tunnel}->{sock_addr} = $raddr;
-
-	    my $unix_socket_try = 0; # wait for the socket to become ready
-	    while (! -S $raddr) {
-		$unix_socket_try++;
-		if ($unix_socket_try > 100) {
-		    $self->{errors} = 1;
-		    $self->finish_tunnel($self->{tunnel});
-		    die "Timeout, migration socket $ruri did not get ready";
-		}
-
-		usleep(50000);
-	    }
-
-	} elsif ($ruri =~ /^tcp:/) {
-	    my $tunnel_addr;
-	    if ($raddr eq "localhost") {
-		# for backwards compatibility with older qemu-server versions
-		my $pfamily = PVE::Tools::get_host_address_family($nodename);
-		my $lport = PVE::Tools::next_migrate_port($pfamily);
-		$tunnel_addr = "$lport:localhost:$rport";
-	    }
-
-	    $self->{tunnel} = $self->fork_tunnel($tunnel_addr);
-
-	} else {
-	    die "unsupported protocol in migration URI: $ruri\n";
-	}
-    } else {
-	#fork tunnel for insecure migration, to send faster commands like resume
-	$self->{tunnel} = $self->fork_tunnel();
-    }
+    start_remote_tunnel($self, $nodename, $migration_type, $raddr, $rport, $ruri);
 
     my $start = time();
 
@@ -1113,6 +1075,50 @@ sub find_remote_ports {
     die "unable to detect remote migration address\n" if !$raddr;
 
     return ($raddr, $rport, $ruri, $spice_port, $spice_ticket);
+}
+
+sub start_remote_tunnel {
+    my ($self, $nodename, $migration_type, $raddr, $rport, $ruri) = @_;
+
+    $self->log('info', "start remote tunnel");
+
+    if ($migration_type eq 'secure') {
+
+	if ($ruri =~ /^unix:/) {
+	    unlink $raddr;
+	    $self->{tunnel} = $self->fork_tunnel("$raddr:$raddr");
+	    $self->{tunnel}->{sock_addr} = $raddr;
+
+	    my $unix_socket_try = 0; # wait for the socket to become ready
+	    while (! -S $raddr) {
+		$unix_socket_try++;
+		if ($unix_socket_try > 100) {
+		    $self->{errors} = 1;
+		    $self->finish_tunnel($self->{tunnel});
+		    die "Timeout, migration socket $ruri did not get ready";
+		}
+
+		usleep(50000);
+	    }
+
+	} elsif ($ruri =~ /^tcp:/) {
+	    my $tunnel_addr;
+	    if ($raddr eq "localhost") {
+		# for backwards compatibility with older qemu-server versions
+		my $pfamily = PVE::Tools::get_host_address_family($nodename);
+		my $lport = PVE::Tools::next_migrate_port($pfamily);
+		$tunnel_addr = "$lport:localhost:$rport";
+	    }
+
+	    $self->{tunnel} = $self->fork_tunnel($tunnel_addr);
+
+	} else {
+	    die "unsupported protocol in migration URI: $ruri\n";
+	}
+    } else {
+	#fork tunnel for insecure migration, to send faster commands like resume
+	$self->{tunnel} = $self->fork_tunnel();
+    }
 }
 
 1;
