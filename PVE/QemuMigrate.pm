@@ -548,8 +548,6 @@ sub phase2 {
 
     my $nodename = PVE::INotify::nodename();
 
-    my $conf = $self->{vmconf};
-
     $self->log('info', "starting VM $vmid on remote node '$self->{node}'");
 
     my $migration_type = $self->{opts}->{migration_type};
@@ -561,189 +559,7 @@ sub phase2 {
 
     livemigrate_storage($self, $vmid);
 
-    my $start = time();
-
-    my $opt_bwlimit = $self->{opts}->{bwlimit};
-
-    $self->log('info', "starting online/live migration on $ruri");
-    $self->{livemigration} = 1;
-
-    # load_defaults
-    my $defaults = PVE::QemuServer::load_defaults();
-
-    $self->log('info', "set migration_caps");
-    eval {
-	PVE::QemuServer::set_migration_caps($vmid);
-    };
-    warn $@ if $@;
-
-    my $qemu_migrate_params = {};
-
-    # migrate speed can be set via bwlimit (datacenter.cfg and API) and via the
-    # migrate_speed parameter in qm.conf - take the lower of the two.
-    my $bwlimit = PVE::Storage::get_bandwidth_limit('migration', undef, $opt_bwlimit) // 0;
-    my $migrate_speed = $conf->{migrate_speed} // $bwlimit;
-    # migrate_speed is in MB/s, bwlimit in KB/s
-    $migrate_speed *= 1024;
-
-    $migrate_speed = ($bwlimit < $migrate_speed) ? $bwlimit : $migrate_speed;
-
-    # always set migrate speed (overwrite kvm default of 32m) we set a very high
-    # default of 8192m which is basically unlimited
-    $migrate_speed ||= ($defaults->{migrate_speed} || 8192) * 1024;
-
-    # qmp takes migrate_speed in B/s.
-    $migrate_speed *= 1024;
-    $self->log('info', "migration speed limit: $migrate_speed B/s");
-    $qemu_migrate_params->{'max-bandwidth'} = int($migrate_speed);
-
-    my $migrate_downtime = $defaults->{migrate_downtime};
-    $migrate_downtime = $conf->{migrate_downtime} if defined($conf->{migrate_downtime});
-    if (defined($migrate_downtime)) {
-	# migrate-set-parameters expects limit in ms
-	$migrate_downtime *= 1000;
-	$self->log('info', "migration downtime limit: $migrate_downtime ms");
-	$qemu_migrate_params->{'downtime-limit'} = int($migrate_downtime);
-    }
-
-    # set cachesize to 10% of the total memory
-    my $memory =  $conf->{memory} || $defaults->{memory};
-    my $cachesize = int($memory * 1048576 / 10);
-    $cachesize = round_powerof2($cachesize);
-
-    $self->log('info', "migration cachesize: $cachesize B");
-    $qemu_migrate_params->{'xbzrle-cache-size'} = int($cachesize);
-
-    $self->log('info', "set migration parameters");
-    eval {
-	mon_cmd($vmid, "migrate-set-parameters", %{$qemu_migrate_params});
-    };
-    $self->log('info', "migrate-set-parameters error: $@") if $@;
-
-    if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
-	my $rpcenv = PVE::RPCEnvironment::get();
-	my $authuser = $rpcenv->get_user();
-
-	my (undef, $proxyticket) = PVE::AccessControl::assemble_spice_ticket($authuser, $vmid, $self->{node});
-
-	my $filename = "/etc/pve/nodes/$self->{node}/pve-ssl.pem";
-	my $subject =  PVE::AccessControl::read_x509_subject_spice($filename);
-
-	$self->log('info', "spice client_migrate_info");
-
-	eval {
-	    mon_cmd($vmid, "client_migrate_info", protocol => 'spice',
-						hostname => $proxyticket, 'port' => 0, 'tls-port' => $spice_port,
-						'cert-subject' => $subject);
-	};
-	$self->log('info', "client_migrate_info error: $@") if $@;
-
-    }
-
-    $self->log('info', "start migrate command to $ruri");
-    eval {
-	mon_cmd($vmid, "migrate", uri => $ruri);
-    };
-    my $merr = $@;
-    $self->log('info', "migrate uri => $ruri failed: $merr") if $merr;
-
-    my $lstat = 0;
-    my $usleep = 1000000;
-    my $i = 0;
-    my $err_count = 0;
-    my $lastrem = undef;
-    my $downtimecounter = 0;
-    while (1) {
-	$i++;
-	my $avglstat = $lstat/$i if $lstat;
-
-	usleep($usleep);
-	my $stat;
-	eval {
-	    $stat = mon_cmd($vmid, "query-migrate");
-	};
-	if (my $err = $@) {
-	    $err_count++;
-	    warn "query migrate failed: $err\n";
-	    $self->log('info', "query migrate failed: $err");
-	    if ($err_count <= 5) {
-		usleep(1000000);
-		next;
-	    }
-	    die "too many query migrate failures - aborting\n";
-	}
-
-        if (defined($stat->{status}) && $stat->{status} =~ m/^(setup)$/im) {
-            sleep(1);
-            next;
-        }
-
-	if (defined($stat->{status}) && $stat->{status} =~ m/^(active|completed|failed|cancelled)$/im) {
-	    $merr = undef;
-	    $err_count = 0;
-	    if ($stat->{status} eq 'completed') {
-		my $delay = time() - $start;
-		if ($delay > 0) {
-		    my $mbps = sprintf "%.2f", $memory / $delay;
-		    my $downtime = $stat->{downtime} || 0;
-		    $self->log('info', "migration speed: $mbps MB/s - downtime $downtime ms");
-		}
-	    }
-
-	    if ($stat->{status} eq 'failed' || $stat->{status} eq 'cancelled') {
-		$self->log('info', "migration status error: $stat->{status}");
-		die "aborting\n"
-	    }
-
-	    if ($stat->{status} ne 'active') {
-		$self->log('info', "migration status: $stat->{status}");
-		last;
-	    }
-
-	    if ($stat->{ram}->{transferred} ne $lstat) {
-		my $trans = $stat->{ram}->{transferred} || 0;
-		my $rem = $stat->{ram}->{remaining} || 0;
-		my $total = $stat->{ram}->{total} || 0;
-		my $xbzrlecachesize = $stat->{"xbzrle-cache"}->{"cache-size"} || 0;
-		my $xbzrlebytes = $stat->{"xbzrle-cache"}->{"bytes"} || 0;
-		my $xbzrlepages = $stat->{"xbzrle-cache"}->{"pages"} || 0;
-		my $xbzrlecachemiss = $stat->{"xbzrle-cache"}->{"cache-miss"} || 0;
-		my $xbzrleoverflow = $stat->{"xbzrle-cache"}->{"overflow"} || 0;
-		# reduce sleep if remainig memory is lower than the average transfer speed
-		$usleep = 100000 if $avglstat && $rem < $avglstat;
-
-		$self->log('info', "migration status: $stat->{status} (transferred ${trans}, " .
-			   "remaining ${rem}), total ${total})");
-
-		if (${xbzrlecachesize}) {
-		    $self->log('info', "migration xbzrle cachesize: ${xbzrlecachesize} transferred ${xbzrlebytes} pages ${xbzrlepages} cachemiss ${xbzrlecachemiss} overflow ${xbzrleoverflow}");
-		}
-
-		if (($lastrem  && $rem > $lastrem ) || ($rem == 0)) {
-		    $downtimecounter++;
-		}
-		$lastrem = $rem;
-
-		if ($downtimecounter > 5) {
-		    $downtimecounter = 0;
-		    $migrate_downtime *= 2;
-		    $self->log('info', "migrate_set_downtime: $migrate_downtime");
-		    eval {
-			mon_cmd($vmid, "migrate_set_downtime", value => int($migrate_downtime*100)/100);
-		    };
-		    $self->log('info', "migrate_set_downtime error: $@") if $@;
-            	}
-
-	    }
-
-
-	    $lstat = $stat->{ram}->{transferred};
-
-	} else {
-	    die $merr if $merr;
-	    die "unable to parse migration status '$stat->{status}' - aborting\n";
-	}
-    }
+    livemigrate($self, $vmid, $ruri, $spice_port);
 }
 
 sub phase2_cleanup {
@@ -1126,6 +942,196 @@ sub livemigrate_storage {
 
 	    $self->log('info', "$drive: start migration to $nbd_uri");
 	    PVE::QemuServer::qemu_drive_mirror($vmid, $drive, $nbd_uri, $vmid, undef, $self->{storage_migration_jobs}, 1, undef, $bwlimit);
+	}
+    }
+}
+
+sub livemigrate {
+    my ($self, $vmid, $ruri, $spice_port) = @_;
+
+    my $conf = $self->{vmconf};
+
+    my $start = time();
+
+    my $opt_bwlimit = $self->{opts}->{bwlimit};
+
+    $self->log('info', "starting online/live migration on $ruri");
+    $self->{livemigration} = 1;
+
+    # load_defaults
+    my $defaults = PVE::QemuServer::load_defaults();
+
+    $self->log('info', "set migration_caps");
+    eval {
+	PVE::QemuServer::set_migration_caps($vmid);
+    };
+    warn $@ if $@;
+
+    my $qemu_migrate_params = {};
+
+    # migrate speed can be set via bwlimit (datacenter.cfg and API) and via the
+    # migrate_speed parameter in qm.conf - take the lower of the two.
+    my $bwlimit = PVE::Storage::get_bandwidth_limit('migration', undef, $opt_bwlimit) // 0;
+    my $migrate_speed = $conf->{migrate_speed} // $bwlimit;
+    # migrate_speed is in MB/s, bwlimit in KB/s
+    $migrate_speed *= 1024;
+
+    $migrate_speed = ($bwlimit < $migrate_speed) ? $bwlimit : $migrate_speed;
+
+    # always set migrate speed (overwrite kvm default of 32m) we set a very high
+    # default of 8192m which is basically unlimited
+    $migrate_speed ||= ($defaults->{migrate_speed} || 8192) * 1024;
+
+    # qmp takes migrate_speed in B/s.
+    $migrate_speed *= 1024;
+    $self->log('info', "migration speed limit: $migrate_speed B/s");
+    $qemu_migrate_params->{'max-bandwidth'} = int($migrate_speed);
+
+    my $migrate_downtime = $defaults->{migrate_downtime};
+    $migrate_downtime = $conf->{migrate_downtime} if defined($conf->{migrate_downtime});
+    if (defined($migrate_downtime)) {
+	# migrate-set-parameters expects limit in ms
+	$migrate_downtime *= 1000;
+	$self->log('info', "migration downtime limit: $migrate_downtime ms");
+	$qemu_migrate_params->{'downtime-limit'} = int($migrate_downtime);
+    }
+
+    # set cachesize to 10% of the total memory
+    my $memory =  $conf->{memory} || $defaults->{memory};
+    my $cachesize = int($memory * 1048576 / 10);
+    $cachesize = round_powerof2($cachesize);
+
+    $self->log('info', "migration cachesize: $cachesize B");
+    $qemu_migrate_params->{'xbzrle-cache-size'} = int($cachesize);
+
+    $self->log('info', "set migration parameters");
+    eval {
+	mon_cmd($vmid, "migrate-set-parameters", %{$qemu_migrate_params});
+    };
+    $self->log('info', "migrate-set-parameters error: $@") if $@;
+
+    if (PVE::QemuServer::vga_conf_has_spice($conf->{vga})) {
+	my $rpcenv = PVE::RPCEnvironment::get();
+	my $authuser = $rpcenv->get_user();
+
+	my (undef, $proxyticket) = PVE::AccessControl::assemble_spice_ticket($authuser, $vmid, $self->{node});
+
+	my $filename = "/etc/pve/nodes/$self->{node}/pve-ssl.pem";
+	my $subject =  PVE::AccessControl::read_x509_subject_spice($filename);
+
+	$self->log('info', "spice client_migrate_info");
+
+	eval {
+	    mon_cmd($vmid, "client_migrate_info", protocol => 'spice',
+						hostname => $proxyticket, 'port' => 0, 'tls-port' => $spice_port,
+						'cert-subject' => $subject);
+	};
+	$self->log('info', "client_migrate_info error: $@") if $@;
+
+    }
+
+    $self->log('info', "start migrate command to $ruri");
+    eval {
+	mon_cmd($vmid, "migrate", uri => $ruri);
+    };
+    my $merr = $@;
+    $self->log('info', "migrate uri => $ruri failed: $merr") if $merr;
+
+    my $lstat = 0;
+    my $usleep = 1000000;
+    my $i = 0;
+    my $err_count = 0;
+    my $lastrem = undef;
+    my $downtimecounter = 0;
+    while (1) {
+	$i++;
+	my $avglstat = $lstat/$i if $lstat;
+
+	usleep($usleep);
+	my $stat;
+	eval {
+	    $stat = mon_cmd($vmid, "query-migrate");
+	};
+	if (my $err = $@) {
+	    $err_count++;
+	    warn "query migrate failed: $err\n";
+	    $self->log('info', "query migrate failed: $err");
+	    if ($err_count <= 5) {
+		usleep(1000000);
+		next;
+	    }
+	    die "too many query migrate failures - aborting\n";
+	}
+
+        if (defined($stat->{status}) && $stat->{status} =~ m/^(setup)$/im) {
+            sleep(1);
+            next;
+        }
+
+	if (defined($stat->{status}) && $stat->{status} =~ m/^(active|completed|failed|cancelled)$/im) {
+	    $merr = undef;
+	    $err_count = 0;
+	    if ($stat->{status} eq 'completed') {
+		my $delay = time() - $start;
+		if ($delay > 0) {
+		    my $mbps = sprintf "%.2f", $memory / $delay;
+		    my $downtime = $stat->{downtime} || 0;
+		    $self->log('info', "migration speed: $mbps MB/s - downtime $downtime ms");
+		}
+	    }
+
+	    if ($stat->{status} eq 'failed' || $stat->{status} eq 'cancelled') {
+		$self->log('info', "migration status error: $stat->{status}");
+		die "aborting\n"
+	    }
+
+	    if ($stat->{status} ne 'active') {
+		$self->log('info', "migration status: $stat->{status}");
+		last;
+	    }
+
+	    if ($stat->{ram}->{transferred} ne $lstat) {
+		my $trans = $stat->{ram}->{transferred} || 0;
+		my $rem = $stat->{ram}->{remaining} || 0;
+		my $total = $stat->{ram}->{total} || 0;
+		my $xbzrlecachesize = $stat->{"xbzrle-cache"}->{"cache-size"} || 0;
+		my $xbzrlebytes = $stat->{"xbzrle-cache"}->{"bytes"} || 0;
+		my $xbzrlepages = $stat->{"xbzrle-cache"}->{"pages"} || 0;
+		my $xbzrlecachemiss = $stat->{"xbzrle-cache"}->{"cache-miss"} || 0;
+		my $xbzrleoverflow = $stat->{"xbzrle-cache"}->{"overflow"} || 0;
+		# reduce sleep if remainig memory is lower than the average transfer speed
+		$usleep = 100000 if $avglstat && $rem < $avglstat;
+
+		$self->log('info', "migration status: $stat->{status} (transferred ${trans}, " .
+			   "remaining ${rem}), total ${total})");
+
+		if (${xbzrlecachesize}) {
+		    $self->log('info', "migration xbzrle cachesize: ${xbzrlecachesize} transferred ${xbzrlebytes} pages ${xbzrlepages} cachemiss ${xbzrlecachemiss} overflow ${xbzrleoverflow}");
+		}
+
+		if (($lastrem  && $rem > $lastrem ) || ($rem == 0)) {
+		    $downtimecounter++;
+		}
+		$lastrem = $rem;
+
+		if ($downtimecounter > 5) {
+		    $downtimecounter = 0;
+		    $migrate_downtime *= 2;
+		    $self->log('info', "migrate_set_downtime: $migrate_downtime");
+		    eval {
+			mon_cmd($vmid, "migrate_set_downtime", value => int($migrate_downtime*100)/100);
+		    };
+		    $self->log('info', "migrate_set_downtime error: $@") if $@;
+            	}
+
+	    }
+
+
+	    $lstat = $stat->{ram}->{transferred};
+
+	} else {
+	    die $merr if $merr;
+	    die "unable to parse migration status '$stat->{status}' - aborting\n";
 	}
     }
 }
