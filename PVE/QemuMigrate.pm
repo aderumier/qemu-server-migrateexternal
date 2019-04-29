@@ -631,22 +631,7 @@ sub phase3_cleanup {
 
     my $tunnel = $self->{tunnel};
 
-    if ($self->{storage_migration}) {
-	# finish block-job
-	eval { PVE::QemuServer::qemu_drive_mirror_monitor($vmid, undef, $self->{storage_migration_jobs}); };
-
-	if (my $err = $@) {
-	    eval { PVE::QemuServer::qemu_blockjobs_cancel($vmid, $self->{storage_migration_jobs}) };
-	    eval { PVE::QemuMigrate::cleanup_remotedisks($self) };
-	    die "Failed to complete storage migration: $err\n";
-	} else {
-	    foreach my $target_drive (keys %{$self->{target_drive}}) {
-		my $drive = PVE::QemuServer::parse_drive($target_drive, $self->{target_drive}->{$target_drive}->{drivestr});
-		$conf->{$target_drive} = PVE::QemuServer::print_drive($drive);
-		PVE::QemuConfig->write_config($vmid, $conf);
-	    }
-	}
-    }
+    finish_block_jobs($self, $vmid);
 
     # transfer replication state before move config
     $self->transfer_replication_state() if $self->{replicated_volumes};
@@ -1158,6 +1143,29 @@ sub stop_remote_vm {
     if (my $err = $@) {
         $self->log('err', $err);
         $self->{errors} = 1;
+    }
+}
+
+sub finish_block_jobs {
+    my ($self, $vmid) = @_;
+
+    my $conf = $self->{vmconf};
+
+    if ($self->{storage_migration}) {
+	# finish block-job
+	eval { PVE::QemuServer::qemu_drive_mirror_monitor($vmid, undef, $self->{storage_migration_jobs}); };
+
+	if (my $err = $@) {
+	    eval { PVE::QemuServer::qemu_blockjobs_cancel($vmid, $self->{storage_migration_jobs}) };
+	    eval { PVE::QemuMigrate::cleanup_remotedisks($self) };
+	    die "Failed to complete storage migration: $err\n";
+	} else {
+	    foreach my $target_drive (keys %{$self->{target_drive}}) {
+		my $drive = PVE::QemuServer::parse_drive($target_drive, $self->{target_drive}->{$target_drive}->{drivestr});
+		$conf->{$target_drive} = PVE::QemuServer::print_drive($drive);
+		PVE::QemuConfig->write_config($vmid, $conf);
+	    }
+	}
     }
 }
 
