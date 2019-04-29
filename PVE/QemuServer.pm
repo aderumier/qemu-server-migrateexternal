@@ -1953,6 +1953,18 @@ sub json_config_properties {
     return $prop;
 }
 
+# add JSON properties for external migration (net override)
+sub json_migrate_external_config_properties {
+    my $prop = shift;
+
+    foreach my $opt (keys %$confdesc) {
+	next if $opt !~ m/^net(\d+)$/;
+	$prop->{$opt} = $confdesc->{$opt};
+    }
+
+    return $prop;
+}
+
 # return copy of $confdesc_cloudinit to generate documentation
 sub cloudinit_config_properties {
 

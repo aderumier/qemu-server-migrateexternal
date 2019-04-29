@@ -906,6 +906,8 @@ our $cmddef = {
 
     migrate => [ "PVE::API2::Qemu", 'migrate_vm', ['vmid', 'target'], { node => $nodename }, $upid_exit ],
 
+    migrate_external => [ "PVE::API2::Qemu", 'migrate_vm_external', ['vmid', 'target'], { node => $nodename }, $upid_exit ],
+
     set => [ "PVE::API2::Qemu", 'update_vm', ['vmid'], { node => $nodename } ],
 
     resize => [ "PVE::API2::Qemu", 'resize_vm', ['vmid', 'disk', 'size'], { node => $nodename } ],

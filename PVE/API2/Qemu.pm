@@ -23,6 +23,7 @@ use PVE::QemuServer;
 use PVE::QemuServer::Drive;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 use PVE::QemuMigrate;
+use PVE::QemuMigrateExternal;
 use PVE::RPCEnvironment;
 use PVE::AccessControl;
 use PVE::INotify;
@@ -3430,6 +3431,93 @@ __PACKAGE__->register_method({
 
 	    return $rpcenv->fork_worker('qmigrate', $vmid, $authuser, $worker);
 	}
+
+    }});
+__PACKAGE__->register_method({
+    name => 'migrate_vm_external',
+    path => '{vmid}/migrate_external',
+    method => 'POST',
+    protected => 1,
+    proxyto => 'node',
+    description => "Experimental! Use at your own risk. Migrate virtual machine to an external cluster. Creates a new migration task.",
+    permissions => {
+	check => ['perm', '/vms/{vmid}', [ 'VM.Migrate' ]],
+    },
+    parameters => {
+	additionalProperties => 0,
+	properties => PVE::QemuServer::json_migrate_external_config_properties({
+	    node => get_standard_option('pve-node'),
+	    vmid => get_standard_option('pve-vmid', { completion => \&PVE::QemuServer::complete_vmid }),
+	    target => {
+		type => 'string',
+		description => "Target node fqdn or ip address.",
+	    },
+	    targetstorage => get_standard_option('pve-storage-id', {
+		description => "Target remote storage.",
+		optional => 1,
+	    }),
+	    targetvmid => get_standard_option('pve-vmid', {
+		description => "Target vmid. If not specified the next available vmid will be used.",
+		optional => 1,
+	    }),
+	    targetkey => {
+		type => 'string',
+		description => "Ssh private key file located in /etc/pve/priv/migrate_external/.",
+		optional => 1,
+	    },
+	}),
+    },
+    returns => {
+	type => 'string',
+	description => "the task ID.",
+    },
+    code => sub {
+	my ($param) = @_;
+
+	my $rpcenv = PVE::RPCEnvironment::get();
+
+	my $authuser = $rpcenv->get_user();
+
+	die "Only root can do external migration." if $authuser ne 'root@pam';
+
+	my $target = extract_param($param, 'target');
+
+	my $vmid = extract_param($param, 'vmid');
+
+	my $targetkey = extract_param($param, 'targetkey');
+
+	PVE::Cluster::check_cfs_quorum();
+
+	raise_param_exc({ target => "target is member of local cluster."}) if PVE::Cluster::check_node_exists($target, 1);
+
+	die "HA must be disable for external migration." if PVE::HA::Config::vm_is_ha_managed($vmid);
+
+	my $migration_external_sshkey = $targetkey ? "/etc/pve/priv/migrate_external/$targetkey" : "/etc/pve/priv/migrate_external/id_rsa_$target";
+
+	die "ssh privatekey is missing for $target" if !-e $migration_external_sshkey;
+
+	my $targetip = PVE::Network::get_ip_from_hostname($target, 0);
+
+	# test if VM exists
+	my $conf = PVE::QemuConfig->load_config($vmid);
+	# try to detect errors early
+
+	PVE::QemuConfig->check_lock($conf);
+
+	die "VM need to be online for external migration" if !PVE::QemuServer::check_running($vmid);
+
+	$param->{online} = 1;
+	$param->{migration_external_sshkey} = $migration_external_sshkey;
+
+	my $realcmd = sub {
+	    PVE::QemuMigrateExternal->migrate($target, $targetip, $vmid, $param);
+	};
+
+	my $worker = sub {
+	    return PVE::GuestHelpers::guest_migration_lock($vmid, 10, $realcmd);
+	};
+
+	return $rpcenv->fork_worker('qmigrate', $vmid, $authuser, $worker);
 
     }});
 
