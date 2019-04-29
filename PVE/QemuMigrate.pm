@@ -626,10 +626,7 @@ sub phase3 {
 sub phase3_cleanup {
     my ($self, $vmid, $err) = @_;
 
-    my $conf = $self->{vmconf};
     return if $self->{phase2errors};
-
-    my $tunnel = $self->{tunnel};
 
     finish_block_jobs($self, $vmid);
 
@@ -641,20 +638,7 @@ sub phase3_cleanup {
 
     stop_local_vm($self, $vmid);
 
-    if($self->{storage_migration}) {
-	# destroy local copies
-	my $volids = $self->{online_local_volumes};
-
-	foreach my $volid (@$volids) {
-	    eval { PVE::Storage::vdisk_free($self->{storecfg}, $volid); };
-	    if (my $err = $@) {
-		$self->log('err', "removing local copy of '$volid' failed - $err");
-		$self->{errors} = 1;
-		last if $err =~ /^interrupted by signal$/;
-	    }
-	}
-
-    }
+    delete_local_volumes($self);
 
     # clear migrate lock
     my $cmd = [ @{$self->{rem_ssh}}, 'qm', 'unlock', $vmid ];
@@ -1197,6 +1181,24 @@ sub stop_local_vm {
     if (my $err = $@) {
 	$self->log('err', $err);
 	$self->{errors} = 1;
+    }
+}
+
+sub delete_local_volumes {
+    my ($self) = @_;
+
+    if($self->{storage_migration}) {
+	# destroy local copies
+	my $volids = $self->{online_local_volumes};
+
+	foreach my $volid (@$volids) {
+	    eval { PVE::Storage::vdisk_free($self->{storecfg}, $volid); };
+	    if (my $err = $@) {
+		$self->log('err', "removing local copy of '$volid' failed - $err");
+		$self->{errors} = 1;
+		last if $err =~ /^interrupted by signal$/;
+	    }
+	}
     }
 }
 
