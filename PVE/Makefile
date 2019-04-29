@@ -1,6 +1,7 @@
 PERLSOURCE = 			\
 	QemuServer.pm		\
 	QemuMigrate.pm		\
+	QemuMigrateExternal.pm	\
 	QMPClient.pm		\
 	QemuConfig.pm
 
