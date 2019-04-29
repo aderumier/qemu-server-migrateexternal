@@ -570,11 +570,7 @@ sub phase2_cleanup {
 
     $self->log('info', "aborting phase 2 - cleanup resources");
 
-    $self->log('info', "migrate_cancel");
-    eval {
-	mon_cmd($vmid, "migrate_cancel");
-    };
-    $self->log('info', "migrate_cancel error: $@") if $@;
+    cancel_migrate($self, $vmid);
 
     my $conf = $self->{vmconf};
     delete $conf->{lock};
@@ -1134,6 +1130,16 @@ sub livemigrate {
 	    die "unable to parse migration status '$stat->{status}' - aborting\n";
 	}
     }
+}
+
+sub cancel_migrate {
+    my ($self, $vmid) = @_;
+
+    $self->log('info', "migrate_cancel");
+    eval {
+	mon_cmd($vmid, "migrate_cancel");
+    };
+    $self->log('info', "migrate_cancel error: $@") if $@;
 }
 
 1;
