@@ -595,14 +595,7 @@ sub phase2_cleanup {
 
     unlock_vm($self, $vmid);
 
-    my $nodename = PVE::INotify::nodename();
-
-    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'stop', $vmid, '--skiplock', '--migratedfrom', $nodename];
-    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
-    if (my $err = $@) {
-        $self->log('err', $err);
-        $self->{errors} = 1;
-    }
+    stop_remote_vm($self, $vmid);
 
     if ($self->{tunnel}) {
 	eval { finish_tunnel($self, $self->{tunnel});  };
@@ -1152,6 +1145,19 @@ sub unlock_vm {
     eval { PVE::QemuConfig->write_config($vmid, $conf) };
     if (my $err = $@) {
 	$self->log('err', $err);
+    }
+}
+
+sub stop_remote_vm {
+    my ($self, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+
+    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'stop', $vmid, '--skiplock', '--migratedfrom', $nodename];
+    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
+    if (my $err = $@) {
+        $self->log('err', $err);
+        $self->{errors} = 1;
     }
 }
 
