@@ -635,54 +635,7 @@ sub phase3_cleanup {
 
     move_config($self, $vmid);
 
-    if ($self->{livemigration}) {
-	if ($self->{storage_migration}) {
-	    # stop nbd server on remote vm - requirement for resume since 2.9
-	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'nbdstop', $vmid];
-
-	    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
-	    if (my $err = $@) {
-		$self->log('err', $err);
-		$self->{errors} = 1;
-	    }
-	}
-
-	# config moved and nbd server stopped - now we can resume vm on target
-	if ($tunnel && $tunnel->{version} && $tunnel->{version} >= 1) {
-	    eval {
-		$self->write_tunnel($tunnel, 30, "resume $vmid");
-	    };
-	    if (my $err = $@) {
-		$self->log('err', $err);
-		$self->{errors} = 1;
-	    }
-	} else {
-	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'resume', $vmid, '--skiplock', '--nocheck'];
-	    my $logf = sub {
-		my $line = shift;
-		$self->log('err', $line);
-	    };
-	    eval { PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => $logf); };
-	    if (my $err = $@) {
-		$self->log('err', $err);
-		$self->{errors} = 1;
-	    }
-	}
-
-	if ($self->{storage_migration} && PVE::QemuServer::parse_guest_agent($conf)->{fstrim_cloned_disks} && $self->{running}) {
-	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'guest', 'cmd', $vmid, 'fstrim'];
-	    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
-	}
-    }
-
-    # close tunnel on successful migration, on error phase2_cleanup closed it
-    if ($tunnel) {
-	eval { finish_tunnel($self, $tunnel);  };
-	if (my $err = $@) {
-	    $self->log('err', $err);
-	    $self->{errors} = 1;
-	}
-    }
+    finish_livemigration($self, $vmid);
 
     eval {
 	my $timer = 0;
@@ -1173,6 +1126,62 @@ sub move_config {
         if !rename($conffile, $newconffile);
 
     $self->switch_replication_job_target() if $self->{replicated_volumes};
+}
+
+sub finish_livemigration {
+    my ($self, $vmid) = @_;
+
+    my $tunnel = $self->{tunnel};
+    my $conf = $self->{vmconf};
+
+    if ($self->{livemigration}) {
+	if ($self->{storage_migration}) {
+	    # stop nbd server on remote vm - requirement for resume since 2.9
+	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'nbdstop', $vmid];
+
+	    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
+	    if (my $err = $@) {
+		$self->log('err', $err);
+		$self->{errors} = 1;
+	    }
+	}
+
+	# config moved and nbd server stopped - now we can resume vm on target
+	if ($tunnel && $tunnel->{version} && $tunnel->{version} >= 1) {
+	    eval {
+		$self->write_tunnel($tunnel, 30, "resume $vmid");
+	    };
+	    if (my $err = $@) {
+		$self->log('err', $err);
+		$self->{errors} = 1;
+	    }
+	} else {
+	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'resume', $vmid, '--skiplock', '--nocheck'];
+	    my $logf = sub {
+		my $line = shift;
+		$self->log('err', $line);
+	    };
+	    eval { PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => $logf); };
+	    if (my $err = $@) {
+		$self->log('err', $err);
+		$self->{errors} = 1;
+	    }
+	}
+
+	if ($self->{storage_migration} && PVE::QemuServer::parse_guest_agent($conf)->{fstrim_cloned_disks} && $self->{running}) {
+	    my $cmd = [@{$self->{rem_ssh}}, 'qm', 'guest', 'cmd', $vmid, 'fstrim'];
+	    eval{ PVE::Tools::run_command($cmd, outfunc => sub {}, errfunc => sub {}) };
+	}
+    }
+
+    # close tunnel on successful migration, on error phase2_cleanup closed it
+    if ($tunnel) {
+	eval { finish_tunnel($self, $tunnel);  };
+	if (my $err = $@) {
+	    $self->log('err', $err);
+	    $self->{errors} = 1;
+	}
+    }
 }
 
 1;
