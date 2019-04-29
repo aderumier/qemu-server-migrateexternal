@@ -593,6 +593,8 @@ sub phase2_cleanup {
 	}
     }
 
+    unlock_vm($self, $vmid);
+
     my $nodename = PVE::INotify::nodename();
 
     my $cmd = [@{$self->{rem_ssh}}, 'qm', 'stop', $vmid, '--skiplock', '--migratedfrom', $nodename];
@@ -1140,6 +1142,17 @@ sub cancel_migrate {
 	mon_cmd($vmid, "migrate_cancel");
     };
     $self->log('info', "migrate_cancel error: $@") if $@;
+}
+
+sub unlock_vm {
+    my ($self, $vmid) = @_;
+
+    my $conf = $self->{vmconf};
+    delete $conf->{lock};
+    eval { PVE::QemuConfig->write_config($vmid, $conf) };
+    if (my $err = $@) {
+	$self->log('err', $err);
+    }
 }
 
 1;
