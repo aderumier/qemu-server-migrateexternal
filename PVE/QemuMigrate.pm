@@ -633,17 +633,7 @@ sub phase3_cleanup {
 
     finish_block_jobs($self, $vmid);
 
-    # transfer replication state before move config
-    $self->transfer_replication_state() if $self->{replicated_volumes};
-
-    # move config to remote node
-    my $conffile = PVE::QemuConfig->config_file($vmid);
-    my $newconffile = PVE::QemuConfig->config_file($vmid, $self->{node});
-
-    die "Failed to move config to node '$self->{node}' - rename failed: $!\n"
-        if !rename($conffile, $newconffile);
-
-    $self->switch_replication_job_target() if $self->{replicated_volumes};
+    move_config($self, $vmid);
 
     if ($self->{livemigration}) {
 	if ($self->{storage_migration}) {
@@ -1167,6 +1157,22 @@ sub finish_block_jobs {
 	    }
 	}
     }
+}
+
+sub move_config {
+    my ($self, $vmid) = @_;
+
+    # transfer replication state before move config
+    $self->transfer_replication_state() if $self->{replicated_volumes};
+
+    # move config to remote node
+    my $conffile = PVE::QemuConfig->config_file($vmid);
+    my $newconffile = PVE::QemuConfig->config_file($vmid, $self->{node});
+
+    die "Failed to move config to node '$self->{node}' - rename failed: $!\n"
+        if !rename($conffile, $newconffile);
+
+    $self->switch_replication_job_target() if $self->{replicated_volumes};
 }
 
 1;
