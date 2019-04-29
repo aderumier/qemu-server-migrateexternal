@@ -1992,6 +1992,11 @@ __PACKAGE__->register_method({
 		type => 'string',
 		optional => 1
 	    },
+	    external_migration => {
+		description => "Enable external migration.",
+		type => 'boolean',
+		optional => 1,
+	    },
 	    timeout => {
 		description => "Wait maximal timeout seconds.",
 		type => 'integer',
@@ -2033,6 +2038,13 @@ __PACKAGE__->register_method({
 	raise_param_exc({ targetstorage => "targetstorage can only by used with migratedfrom." })
 	    if $targetstorage && !$migratedfrom;
 
+	my $external_migration = extract_param($param, 'external_migration');
+	raise_param_exc({ external_migration => "Only root may use this option." })
+	    if $external_migration && $authuser ne 'root@pam';
+
+	raise_param_exc({ external_migration => "targetstorage can't be used with external_migration." })
+	    if ($targetstorage && $external_migration);
+
 	# read spice ticket from STDIN
 	my $spice_ticket;
 	if ($stateuri && ($stateuri eq 'tcp' || $stateuri eq 'unix') && $migratedfrom && ($rpcenv->{type} eq 'cli')) {
@@ -2067,7 +2079,7 @@ __PACKAGE__->register_method({
 		syslog('info', "start VM $vmid: $upid\n");
 
 		PVE::QemuServer::vm_start($storecfg, $vmid, $stateuri, $skiplock, $migratedfrom, undef, $machine,
-					  $spice_ticket, $migration_network, $migration_type, $targetstorage, $timeout);
+					  $spice_ticket, $migration_network, $migration_type, $targetstorage, $timeout, $external_migration);
 		return;
 	    };
 

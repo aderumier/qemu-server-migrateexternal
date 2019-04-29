@@ -4716,7 +4716,7 @@ sub vmconfig_update_disk {
 
 sub vm_start {
     my ($storecfg, $vmid, $statefile, $skiplock, $migratedfrom, $paused,
-	$forcemachine, $spice_ticket, $migration_network, $migration_type, $targetstorage, $timeout) = @_;
+	$forcemachine, $spice_ticket, $migration_network, $migration_type, $targetstorage, $timeout, $external_migration) = @_;
 
     PVE::QemuConfig->lock_config($vmid, sub {
 	my $conf = PVE::QemuConfig->load_config($vmid, $migratedfrom);
@@ -4748,7 +4748,19 @@ sub vm_start {
 
 	my $local_volumes = {};
 
-	if ($targetstorage) {
+	if ($external_migration) {
+	    foreach_drive($conf, sub {
+		my ($ds, $drive) = @_;
+
+		return if drive_is_cdrom($drive);
+
+		my $volid = $drive->{file};
+
+		return if !$volid;
+
+		$local_volumes->{$ds} = $volid;
+	    });
+	} elsif ($targetstorage) {
 	    foreach_drive($conf, sub {
 		my ($ds, $drive) = @_;
 
@@ -4993,7 +5005,7 @@ sub vm_start {
 	}
 
 	#start nbd server for storage migration
-	if ($targetstorage) {
+	if ($targetstorage || $external_migration) {
 	    my $nodename = nodename();
 	    my $localip = $get_migration_ip->($migration_network, $nodename);
 	    my $pfamily = PVE::Tools::get_host_address_family($nodename);
@@ -5011,7 +5023,7 @@ sub vm_start {
 	    }
 	}
 
-	if ($migratedfrom) {
+	if ($migratedfrom || $external_migration) {
 	    eval {
 		set_migration_caps($vmid);
 	    };
