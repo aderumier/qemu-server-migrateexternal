@@ -637,19 +637,7 @@ sub phase3_cleanup {
 
     finish_livemigration($self, $vmid);
 
-    eval {
-	my $timer = 0;
-	if (PVE::QemuServer::vga_conf_has_spice($conf->{vga}) && $self->{running}) {
-	    $self->log('info', "Waiting for spice server migration");
-	    while (1) {
-		my $res = mon_cmd($vmid, 'query-spice');
-		last if int($res->{'migrated'}) == 1;
-		last if $timer > 50;
-		$timer ++;
-		usleep(200000);
-	    }
-	}
-    };
+    finish_spice_migration($self, $vmid);
 
     # always stop local VM
     eval { PVE::QemuServer::vm_stop($self->{storecfg}, $vmid, 1, 1); };
@@ -1182,6 +1170,26 @@ sub finish_livemigration {
 	    $self->{errors} = 1;
 	}
     }
+}
+
+sub finish_spice_migration {
+    my ($self, $vmid) = @_;
+
+    my $conf = $self->{vmconf};
+
+    eval {
+	my $timer = 0;
+	if (PVE::QemuServer::vga_conf_has_spice($conf->{vga}) && $self->{running}) {
+	    $self->log('info', "Waiting for spice server migration");
+	    while (1) {
+		my $res = mon_cmd($vmid, 'query-spice');
+		last if int($res->{'migrated'}) == 1;
+		last if $timer > 50;
+		$timer ++;
+		usleep(200000);
+	    }
+	}
+    };
 }
 
 1;
