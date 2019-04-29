@@ -639,22 +639,7 @@ sub phase3_cleanup {
 
     finish_spice_migration($self, $vmid);
 
-    # always stop local VM
-    eval { PVE::QemuServer::vm_stop($self->{storecfg}, $vmid, 1, 1); };
-    if (my $err = $@) {
-	$self->log('err', "stopping vm failed - $err");
-	$self->{errors} = 1;
-    }
-
-    # always deactivate volumes - avoid lvm LVs to be active on several nodes
-    eval {
-	my $vollist = PVE::QemuServer::get_vm_volumes($conf);
-	PVE::Storage::deactivate_volumes($self->{storecfg}, $vollist);
-    };
-    if (my $err = $@) {
-	$self->log('err', $err);
-	$self->{errors} = 1;
-    }
+    stop_local_vm($self, $vmid);
 
     if($self->{storage_migration}) {
 	# destroy local copies
@@ -1190,6 +1175,29 @@ sub finish_spice_migration {
 	    }
 	}
     };
+}
+
+sub stop_local_vm {
+    my ($self, $vmid) = @_;
+
+    my $conf = $self->{vmconf};
+
+    # always stop local VM
+    eval { PVE::QemuServer::vm_stop($self->{storecfg}, $vmid, 1, 1); };
+    if (my $err = $@) {
+	$self->log('err', "stopping vm failed - $err");
+	$self->{errors} = 1;
+    }
+
+    # always deactivate volumes - avoid lvm LVs to be active on several nodes
+    eval {
+	my $vollist = PVE::QemuServer::get_vm_volumes($conf);
+	PVE::Storage::deactivate_volumes($self->{storecfg}, $vollist);
+    };
+    if (my $err = $@) {
+	$self->log('err', $err);
+	$self->{errors} = 1;
+    }
 }
 
 1;
