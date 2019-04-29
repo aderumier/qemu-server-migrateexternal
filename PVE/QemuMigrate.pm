@@ -528,12 +528,7 @@ sub phase1_cleanup {
 
     $self->log('info', "aborting phase 1 - cleanup resources");
 
-    my $conf = $self->{vmconf};
-    delete $conf->{lock};
-    eval { PVE::QemuConfig->write_config($vmid, $conf) };
-    if (my $err = $@) {
-	$self->log('err', $err);
-    }
+    unlock_vm($self, $vmid);
 
     if ($self->{volumes}) {
 	foreach my $volid (@{$self->{volumes}}) {
