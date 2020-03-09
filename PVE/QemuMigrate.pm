@@ -577,11 +577,6 @@ sub phase2_cleanup {
     # cleanup ressources on target host
     if ($self->{storage_migration}) {
 
-	eval { PVE::QemuServer::qemu_blockjobs_cancel($vmid, $self->{storage_migration_jobs}) };
-	if (my $err = $@) {
-	    $self->log('err', $err);
-	}
-
 	eval { PVE::QemuMigrate::cleanup_remotedisks($self) };
 	if (my $err = $@) {
 	    $self->log('err', $err);
@@ -1015,6 +1010,13 @@ sub cancel_migrate {
 	mon_cmd($vmid, "migrate_cancel");
     };
     $self->log('info', "migrate_cancel error: $@") if $@;
+
+    if ($self->{storage_migration}) {
+	eval { PVE::QemuServer::qemu_blockjobs_cancel($vmid, $self->{storage_migration_jobs}) };
+	if (my $err = $@) {
+	    $self->log('err', $err);
+	}
+    }
 }
 
 sub unlock_vm {
